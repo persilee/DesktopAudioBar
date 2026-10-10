@@ -471,14 +471,14 @@ final class SpectrumView: NSView {
 // MARK: - 应用入口
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var window: NSWindow!
-    private let view = SpectrumView()
+    private var windows: [NSWindow] = []        // 每个屏幕一个窗口
+    private var views: [SpectrumView] = []
     private let capture = AudioCapture()
     private let analyzer = SpectrumAnalyzer(fftSize: Config.fftSize, barCount: Config.barCount)
     private var timer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        setupWindow()
+        setupWindows()
         Task { await startCapture() }
         timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             self?.tick()
@@ -489,23 +489,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         timer?.invalidate()
     }
 
-    private func setupWindow() {
-        guard let screen = NSScreen.main else { return }
-        let h = Config.mirror ? Config.barHeight * 2 : Config.barHeight
-        let frame = NSRect(x: screen.frame.minX, y: screen.frame.minY,
-                           width: screen.frame.width, height: h)
+    /// 为所有已连接的显示器各创建一个频谱窗口（支持多屏）
+    private func setupWindows() {
+        let screens = NSScreen.screens
+        guard !screens.isEmpty else { return }
+        for screen in screens {
+            let h = Config.mirror ? Config.barHeight * 2 : Config.barHeight
+            let frame = NSRect(x: screen.frame.minX, y: screen.frame.minY,
+                               width: screen.frame.width, height: h)
 
-        window = NSWindow(contentRect: frame, styleMask: [.borderless],
-                          backing: .buffered, defer: false)
-        window.isOpaque = false
-        window.backgroundColor = .clear
-        window.hasShadow = false
-        window.ignoresMouseEvents = true
-        // 关键：桌面图标层级之上、普通应用窗口（Ghostty）之下
-        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + Config.levelOffset)
-        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
-        window.contentView = view
-        window.orderFrontRegardless()
+            let window = NSWindow(contentRect: frame, styleMask: [.borderless],
+                                  backing: .buffered, defer: false)
+            window.isOpaque = false
+            window.backgroundColor = .clear
+            window.hasShadow = false
+            window.ignoresMouseEvents = true
+            // 关键：桌面图标层级之上、普通应用窗口（Ghostty）之下
+            window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + Config.levelOffset)
+            window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+            let view = SpectrumView()
+            window.contentView = view
+            window.orderFrontRegardless()
+            windows.append(window)
+            views.append(view)
+        }
+        DebugLog.write("created \(windows.count) window(s) for \(screens.count) screen(s)")
     }
 
     @MainActor private func startCapture() async {
@@ -513,7 +521,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try await capture.start()
         } catch {
             let msg = "需要屏幕录制权限：系统设置 → 隐私与安全性 → 屏幕录制 → 开启 DesktopAudioBar，然后重新运行"
-            view.showStatus(msg)
+            for v in views { v.showStatus(msg) }
             DebugLog.write("capture failed: \(error.localizedDescription)")
         }
     }
@@ -523,7 +531,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard samples.count == Config.fftSize else { return }
         let levels = analyzer.levels(from: samples, barCount: Config.barCount,
                                      gain: Config.gain, useAGC: Config.useAGC, decay: 0)
-        view.update(levels: levels)
+        for v in views { v.update(levels: levels) }
     }
 }
 
