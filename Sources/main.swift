@@ -40,8 +40,8 @@ enum Config {
     static let baseHeight: CGFloat = 2          // 静音时也显示的条形基础高度（px，近 0，cava 风格）
     static let amplitude: CGFloat = 280         // 音乐律动幅度：基础高度上额外升高的最大高度（px）
     static let barHeight: CGFloat = baseHeight + amplitude   // 窗口总高
-    static let barCount = 48                        // 条形数量
-    static let barOpacity: CGFloat = 0.95           // 条形不透明度 0~1
+    static let barMinWidth: CGFloat = 20        // 条形最小宽度（px）；条数 = 屏幕宽度 / (barMinWidth + barGap)
+    static let barOpacity: CGFloat = 0.65           // 条形不透明度 0~1
     static let barGap: CGFloat = 2                  // 条形间距 px
     static let barCornerRadius: CGFloat = 2         // 条形圆角（0 = 纯矩形）
     static let topColor    = NSColor(srgbRed: 0.54, green: 0.71, blue: 0.98, alpha: 1.0)   // #89b4fa 蓝
@@ -67,6 +67,12 @@ enum Config {
     static let sensUp: Float = 0.001                // 不过冲时 sens 上升速率
     static let sensDown: Float = 0.02               // 过冲时 sens 下降速率
     static let sensInitBoost: Float = 0.1           // 初始快速上升速率
+
+    /// 根据屏幕宽度计算条形数量：宽度越宽条数越多，条形最小宽度 barMinWidth
+    static func barCount(for width: CGFloat) -> Int {
+        let n = Int(width / (barMinWidth + barGap))
+        return max(8, n)   // 至少 8 条，防极端窄屏
+    }
 }
 
 // MARK: - 音频环形缓冲
@@ -237,6 +243,7 @@ final class AudioCapture: NSObject, SCStreamOutput {
 // MARK: - FFT 频谱分析（v3 = 完整复刻 cava 信号链）
 
 final class SpectrumAnalyzer {
+    let barCount: Int                            // 本分析器对应的条形数量（随屏幕宽度）
     private let n: Int
     private let log2n: vDSP_Length
     private let fftSetup: FFTSetup
@@ -262,6 +269,7 @@ final class SpectrumAnalyzer {
     private var bandBoost: [Float] = []
 
     init(fftSize: Int, barCount: Int) {
+        self.barCount = barCount
         self.n = fftSize
         self.log2n = vDSP_Length(log2(Double(fftSize)))
         self.fftSetup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2))!
@@ -385,16 +393,18 @@ final class SpectrumAnalyzer {
 // MARK: - 频谱视图
 
 final class SpectrumView: NSView {
-    private var levels: [Float] = [Float](repeating: 0, count: Config.barCount)
+    private var levels: [Float]
     private var statusText: String?
-    private var barColors: [NSColor] = []
+    private var barColors: [NSColor]
 
-    init() {
+    init(barCount: Int) {
+        self.levels = [Float](repeating: 0, count: max(barCount, 1))
+        self.barColors = []
         super.init(frame: .zero)
         wantsLayer = true
         // 预计算条形颜色（自下而上：bottom → top 渐变），避免每帧创建渐变对象
-        for i in 0..<max(Config.barCount, 1) {
-            let t = CGFloat(i) / CGFloat(max(Config.barCount - 1, 1))
+        for i in 0..<max(barCount, 1) {
+            let t = CGFloat(i) / CGFloat(max(barCount - 1, 1))
             barColors.append(lerp(Config.bottomColor, Config.topColor, t))
         }
     }
@@ -473,9 +483,9 @@ final class SpectrumView: NSView {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var windows: [NSWindow] = []        // 每个屏幕一个窗口
     private var views: [SpectrumView] = []
+    private var analyzers: [SpectrumAnalyzer] = []   // 每屏一个分析器（条数随屏幕宽度）
     private var statusItem: NSStatusItem?
     private let capture = AudioCapture()
-    private let analyzer = SpectrumAnalyzer(fftSize: Config.fftSize, barCount: Config.barCount)
     private var timer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -495,19 +505,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         timer?.invalidate()
     }
 
-    // MARK: - 多屏窗口
-
-    /// 为所有已连接的显示器各创建一个频谱窗口（支持多屏）
+    /// 为所有已连接的显示器各创建一个频谱窗口（支持多屏；重复调用会先清理旧窗口）
     private func setupWindows() {
         for w in windows { w.orderOut(nil) }
         windows.removeAll()
         views.removeAll()
+        analyzers.removeAll()
         let screens = NSScreen.screens
         guard !screens.isEmpty else { return }
         for screen in screens {
             let h = Config.mirror ? Config.barHeight * 2 : Config.barHeight
             let frame = NSRect(x: screen.frame.minX, y: screen.frame.minY,
                                width: screen.frame.width, height: h)
+
+            // 条数由屏幕宽度决定：宽度越宽条数越多（条形最小宽度 barMinWidth）
+            let barCount = Config.barCount(for: screen.frame.width)
 
             let window = NSWindow(contentRect: frame, styleMask: [.borderless],
                                   backing: .buffered, defer: false)
@@ -518,18 +530,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // 关键：桌面图标层级之上、普通应用窗口（Ghostty）之下
             window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + Config.levelOffset)
             window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
-            let view = SpectrumView()
+            let view = SpectrumView(barCount: barCount)
+            let analyzer = SpectrumAnalyzer(fftSize: Config.fftSize, barCount: barCount)
             window.contentView = view
             window.orderFrontRegardless()
             windows.append(window)
             views.append(view)
+            analyzers.append(analyzer)
         }
         DebugLog.write("created \(windows.count) window(s) for \(screens.count) screen(s)")
-    }
-
-    @objc private func screensChanged() {
-        setupWindows()
-        statusItem?.menu = buildMenu()
     }
 
     // MARK: - 菜单栏控制
@@ -547,8 +556,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         let screens = NSScreen.screens
         if screens.isEmpty {
-            let mi = NSMenuItem(title: "未检测到显示器", action: nil, keyEquivalent: "")
-            menu.addItem(mi)
+            menu.addItem(NSMenuItem(title: "未检测到显示器", action: nil, keyEquivalent: ""))
         }
         for (i, screen) in screens.enumerated() {
             let title = "显示器 \(i + 1)（\(Int(screen.frame.width))×\(Int(screen.frame.height))）"
@@ -593,6 +601,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem?.menu = buildMenu()
     }
 
+    @objc private func screensChanged() {
+        setupWindows()
+        statusItem?.menu = buildMenu()
+    }
+
     // MARK: - 音频与刷新
 
     @MainActor private func startCapture() async {
@@ -608,9 +621,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func tick() {
         let samples = capture.ring.latest(Config.fftSize)
         guard samples.count == Config.fftSize else { return }
-        let levels = analyzer.levels(from: samples, barCount: Config.barCount,
-                                     gain: Config.gain, useAGC: Config.useAGC, decay: 0)
-        for v in views { v.update(levels: levels) }
+        // 每屏独立分析器（条数随屏幕宽度），同一份音频样本各自计算
+        for (i, v) in views.enumerated() where i < analyzers.count {
+            let levels = analyzers[i].levels(from: samples, barCount: analyzers[i].barCount,
+                                             gain: Config.gain, useAGC: Config.useAGC, decay: 0)
+            v.update(levels: levels)
+        }
     }
 }
 
