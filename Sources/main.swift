@@ -38,7 +38,7 @@ enum DebugLog {
 enum Config {
     // —— 外观 ——
     static let baseHeight: CGFloat = 80         // 静音时也显示的条形基础高度（px）
-    static let amplitude: CGFloat = 200         // 音乐律动幅度：基础高度上额外升高的最大高度（px）
+    static let amplitude: CGFloat = 280         // 音乐律动幅度：基础高度上额外升高的最大高度（px）
     static let barHeight: CGFloat = baseHeight + amplitude   // 窗口总高
     static let barCount = 48                        // 条形数量
     static let barOpacity: CGFloat = 0.95           // 条形不透明度 0~1
@@ -441,11 +441,13 @@ final class SpectrumView: NSView {
         let padding: CGFloat = 4
         let barW = max(1, (bounds.width - padding * 2 - gap * CGFloat(count - 1)) / CGFloat(count))
 
-        drawBars(in: NSRect(x: 0, y: 0, width: bounds.width, height: bounds.height / 2),
+        // 非镜像：条形绘制区 = 整个窗口高度；镜像：上下各半
+        let bandH = Config.mirror ? bounds.height / 2 : bounds.height
+        drawBars(in: NSRect(x: 0, y: 0, width: bounds.width, height: bandH),
                  levels: levels, reversed: false, barW: barW, gap: gap, padding: padding)
 
         if Config.mirror {
-            drawBars(in: NSRect(x: 0, y: bounds.height / 2, width: bounds.width, height: bounds.height / 2),
+            drawBars(in: NSRect(x: 0, y: bounds.height / 2, width: bounds.width, height: bandH),
                      levels: levels, reversed: true, barW: barW, gap: gap, padding: padding)
         }
     }
