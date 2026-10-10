@@ -473,24 +473,35 @@ final class SpectrumView: NSView {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var windows: [NSWindow] = []        // 每个屏幕一个窗口
     private var views: [SpectrumView] = []
+    private var statusItem: NSStatusItem?
     private let capture = AudioCapture()
     private let analyzer = SpectrumAnalyzer(fftSize: Config.fftSize, barCount: Config.barCount)
     private var timer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupWindows()
+        setupMenuBar()
         Task { await startCapture() }
         timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             self?.tick()
         }
+        // 显示器拔插时自动重建窗口与菜单
+        NotificationCenter.default.addObserver(self, selector: #selector(screensChanged),
+                                               name: NSApplication.didChangeScreenParametersNotification,
+                                               object: nil)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
     }
 
+    // MARK: - 多屏窗口
+
     /// 为所有已连接的显示器各创建一个频谱窗口（支持多屏）
     private func setupWindows() {
+        for w in windows { w.orderOut(nil) }
+        windows.removeAll()
+        views.removeAll()
         let screens = NSScreen.screens
         guard !screens.isEmpty else { return }
         for screen in screens {
@@ -515,6 +526,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         DebugLog.write("created \(windows.count) window(s) for \(screens.count) screen(s)")
     }
+
+    @objc private func screensChanged() {
+        setupWindows()
+        statusItem?.menu = buildMenu()
+    }
+
+    // MARK: - 菜单栏控制
+
+    private func setupMenuBar() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        if let btn = item.button {
+            btn.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "DesktopAudioBar")
+        }
+        item.menu = buildMenu()
+        statusItem = item
+    }
+
+    private func buildMenu() -> NSMenu {
+        let menu = NSMenu()
+        let screens = NSScreen.screens
+        if screens.isEmpty {
+            let mi = NSMenuItem(title: "未检测到显示器", action: nil, keyEquivalent: "")
+            menu.addItem(mi)
+        }
+        for (i, screen) in screens.enumerated() {
+            let title = "显示器 \(i + 1)（\(Int(screen.frame.width))×\(Int(screen.frame.height))）"
+            let mi = NSMenuItem(title: title, action: #selector(toggleScreen(_:)), keyEquivalent: "")
+            mi.target = self
+            mi.tag = i
+            mi.state = (i < windows.count && windows[i].isVisible) ? .on : .off
+            menu.addItem(mi)
+        }
+        menu.addItem(.separator())
+        let allOn = NSMenuItem(title: "全部显示", action: #selector(showAllScreens), keyEquivalent: "")
+        allOn.target = self
+        menu.addItem(allOn)
+        let allOff = NSMenuItem(title: "全部隐藏", action: #selector(hideAllScreens), keyEquivalent: "")
+        allOff.target = self
+        menu.addItem(allOff)
+        menu.addItem(.separator())
+        let quit = NSMenuItem(title: "退出 DesktopAudioBar", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        menu.addItem(quit)
+        return menu
+    }
+
+    @objc private func toggleScreen(_ sender: NSMenuItem) {
+        let i = sender.tag
+        guard i >= 0 && i < windows.count else { return }
+        if windows[i].isVisible {
+            windows[i].orderOut(nil)
+            sender.state = .off
+        } else {
+            windows[i].orderFrontRegardless()
+            sender.state = .on
+        }
+    }
+
+    @objc private func showAllScreens() {
+        for w in windows { w.orderFrontRegardless() }
+        statusItem?.menu = buildMenu()   // 刷新勾选状态
+    }
+
+    @objc private func hideAllScreens() {
+        for w in windows { w.orderOut(nil) }
+        statusItem?.menu = buildMenu()
+    }
+
+    // MARK: - 音频与刷新
 
     @MainActor private func startCapture() async {
         do {
