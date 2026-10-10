@@ -37,7 +37,7 @@ enum DebugLog {
 
 enum Config {
     // —— 外观 ——
-    static let baseHeight: CGFloat = 80         // 静音时也显示的条形基础高度（px）
+    static let baseHeight: CGFloat = 2          // 静音时也显示的条形基础高度（px，近 0，cava 风格）
     static let amplitude: CGFloat = 280         // 音乐律动幅度：基础高度上额外升高的最大高度（px）
     static let barHeight: CGFloat = baseHeight + amplitude   // 窗口总高
     static let barCount = 48                        // 条形数量
