@@ -6,6 +6,10 @@
 - 渲染：vDSP FFT + 对数频段聚合 + 自动增益 + 峰值阻尼，60fps，CPU 占用极低
 - 样式：无边框透明窗口，底部 48px，蓝紫渐变（Catppuccin 配色，可改）
 
+## 预览
+
+[Demo](./assets/录屏2026-10-12 00.03.29.mov)
+
 ## 编译
 
 ```bash
@@ -36,19 +40,19 @@ killall DesktopAudioBar
 
 编辑 `Sources/main.swift` 顶部 `Config` 区，改完重新 `./build.sh`：
 
-| 参数 | 默认 | 说明 |
-| --- | --- | --- |
-| `barHeight` | 48 | 频谱条高度（px，贴屏幕底部） |
-| `barCount` | 48 | 条形数量 |
-| `barOpacity` | 0.90 | 条形不透明度 0~1 |
-| `barGap` | 2 | 条形间距 px |
-| `topColor` / `bottomColor` | #89b4fa / #cba6f7 | 渐变两端颜色 |
-| `mirror` | false | true = 上下镜像成两条 |
-| `levelOffset` | 1 | 窗口层级：1 = 桌面图标之上、应用之下；0 = 图标之下 |
-| `useAGC` | true | 自动增益（跟随音量自适应） |
-| `gain` | 1.0 | 手动增益（`useAGC=false` 时生效） |
-| `levelDecay` | 0.82 | 条形回落速度（越小回落越快） |
-| `agcDecay` | 0.985 | 自动增益峰值衰减（越小响应越灵敏） |
+| 参数                       | 默认              | 说明                                               |
+| -------------------------- | ----------------- | -------------------------------------------------- |
+| `barHeight`                | 48                | 频谱条高度（px，贴屏幕底部）                       |
+| `barCount`                 | 48                | 条形数量                                           |
+| `barOpacity`               | 0.90              | 条形不透明度 0~1                                   |
+| `barGap`                   | 2                 | 条形间距 px                                        |
+| `topColor` / `bottomColor` | #89b4fa / #cba6f7 | 渐变两端颜色                                       |
+| `mirror`                   | false             | true = 上下镜像成两条                              |
+| `levelOffset`              | 1                 | 窗口层级：1 = 桌面图标之上、应用之下；0 = 图标之下 |
+| `useAGC`                   | true              | 自动增益（跟随音量自适应）                         |
+| `gain`                     | 1.0               | 手动增益（`useAGC=false` 时生效）                  |
+| `levelDecay`               | 0.82              | 条形回落速度（越小回落越快）                       |
+| `agcDecay`                 | 0.985             | 自动增益峰值衰减（越小响应越灵敏）                 |
 
 ## 开机自启
 
