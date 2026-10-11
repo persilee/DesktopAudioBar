@@ -8,7 +8,7 @@
 
 ## 预览
 
-[Demo](./assets/录屏2026-10-12 00.03.29.mov)
+[Demo](https://github.com/user-attachments/assets/2623c543-62c5-4997-8fa4-a2579fe5aaa3)
 
 ## 编译
 
