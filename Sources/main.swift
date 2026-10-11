@@ -40,10 +40,10 @@ enum Config {
     static let baseHeight: CGFloat = 2          // 静音时也显示的条形基础高度（px，近 0，cava 风格）
     static let amplitude: CGFloat = 280         // 音乐律动幅度：基础高度上额外升高的最大高度（px）
     static let barHeight: CGFloat = baseHeight + amplitude   // 窗口总高
-    static let barMinWidth: CGFloat = 20        // 条形最小宽度（px）；条数 = 屏幕宽度 / (barMinWidth + barGap)
-    static let barOpacity: CGFloat = 0.65           // 条形不透明度 0~1
-    static let barGap: CGFloat = 2                  // 条形间距 px
-    static let barCornerRadius: CGFloat = 2         // 条形圆角（0 = 纯矩形）
+    static let barMinWidth: CGFloat = 12        // 条形最小宽度（px）；条数 = 屏幕宽度 / (barMinWidth + barGap)
+    static let barOpacity: CGFloat = 0.9           // 条形不透明度 0~1
+    static let barGap: CGFloat = 6                  // 条形间距 px
+    static let barCornerRadius: CGFloat = 4         // 条形圆角（0 = 纯矩形）
     static let topColor    = NSColor(srgbRed: 0.54, green: 0.71, blue: 0.98, alpha: 1.0)   // #89b4fa 蓝
     static let bottomColor = NSColor(srgbRed: 0.80, green: 0.65, blue: 0.97, alpha: 1.0)   // #cba6f7 紫
     static let mirror = false                       // true = 上下镜像成两条
@@ -64,6 +64,10 @@ enum Config {
     static let gravityMod: Float = pow(framerateMod, 2.5) * 2.0 / noiseReduction  // 下落曲线系数
     static let fallStep: Float = 0.028              // 下落步进/帧
     static let boostPow: Float = 0.85               // 高频提升指数（cava: eq *= f^0.85）
+    static let bandMeanDecay: Float = 0.985         // per-band 均值基准衰减（越小恢复越快，越大条回落越慢）
+    static let bandNormScale: Float = 5.5           // per-band 归一化缩放（越大平均条高越矮，越小越容易顶满）
+    static let bandShapePow: Float = -0.45          // 归一化后形状系数 pow(1+fc/3000, shapePow)：负值保留"低频高、高频矮"层次，高频仍活跃
+    static let memRelief: Float = 0.92              // 顶满(clamp)时积分器记忆泄压系数（防粘顶，越小回落越快）
     static let sensUp: Float = 0.001                // 不过冲时 sens 上升速率
     static let sensDown: Float = 0.02               // 过冲时 sens 下降速率
     static let sensInitBoost: Float = 0.1           // 初始快速上升速率
@@ -262,11 +266,13 @@ final class SpectrumAnalyzer {
     private var cavaPeak: [Float]          // 峰值保持
     private var cavaFall: [Float]          // 下落进度
     private var cavaMem: [Float]           // 泄漏积分器记忆
+    private var bandMean: [Float]          // 每频段长期均值（per-band 归一化，解决高频不动）
 
     // 预计算频段
     private var bandStart: [Int] = []
     private var bandEnd: [Int] = []
     private var bandBoost: [Float] = []
+    private var bandShape: [Float] = []          // 归一化后形状系数（保留频谱层次）
 
     init(fftSize: Int, barCount: Int) {
         self.barCount = barCount
@@ -281,6 +287,7 @@ final class SpectrumAnalyzer {
         self.cavaPeak = [Float](repeating: 0, count: barCount)
         self.cavaFall = [Float](repeating: 0, count: barCount)
         self.cavaMem = [Float](repeating: 0, count: barCount)
+        self.bandMean = [Float](repeating: 0, count: barCount)
         // Hann 窗：w[i] = 0.5 * (1 - cos(2πi/(n-1)))
         self.window = [Float](repeating: 0, count: fftSize)
         for i in 0..<fftSize {
@@ -296,6 +303,7 @@ final class SpectrumAnalyzer {
             bandEnd.append(max(end, start + 1))
             let fc = Float((start + end) / 2) * Float(Config.sampleRate / 2) / Float(ucount)
             bandBoost.append(pow(fc / 1000.0, Config.boostPow))
+            bandShape.append(pow(1.0 + fc / 3000.0, Config.bandShapePow))
         }
     }
 
@@ -332,12 +340,12 @@ final class SpectrumAnalyzer {
             raw[b] = sum * bandBoost[b]
         }
 
-        // silence 检测（cava: 有非零样本才算有声）
+        // —— per-band 均值归一化 + 全局 sens 反馈 + falloff + integral + clamp ——
+        // 每频段用自己的长期均值做基准（快攻慢放）→ 高频弱信号也能活跃（解决右 1/3 不动）；
+        // 全局 sens 保留 cava 过冲反馈 → 防止 integral 记忆把条锁死在顶
+        lastRawMax = raw.max() ?? 0
         let maxLevel = raw.max() ?? 0
-        lastRawMax = maxLevel
-        if maxLevel < 1e-5 { silence = true } else { silence = false }
-
-        // —— cava: sens 自适应乘性增益 + falloff + integral + clamp ——
+        silence = maxLevel < 1e-5
         let fm = Config.framerateMod
         let alpha = Config.noiseReduction / Config.integralMod   // 泄漏积分器反馈 ≈0.763
         let gMod = Config.gravityMod
@@ -345,8 +353,20 @@ final class SpectrumAnalyzer {
         var bars = [Float](repeating: 0, count: barCount)
         for b in 0..<barCount {
             var out = raw[b]
-            if useAGC { out *= sens }
-            else { out *= gain }
+            if useAGC {
+                // 均值跟踪：快攻慢放
+                let m = bandMean[b]
+                if out > m { bandMean[b] = out }
+                else { bandMean[b] = m * Config.bandMeanDecay }
+                bandMean[b] = max(bandMean[b], 1e-6)
+                // 归一化：平均能量水平 → ≈0.18，强音 → 超 1（clamp），轻音 → 回落
+                out /= (bandMean[b] * Config.bandNormScale)
+                // 形状系数：乘在归一化之后（否则会被均值吸收），保留"低频高、高频矮"层次，高频仍活跃
+                out *= bandShape[b]
+                out *= sens
+            } else {
+                out *= gain
+            }
 
             // falloff：本帧值 < 上帧处理后的值 → 从峰值按抛物线缓慢滑落（cava 丝滑手感）
             if out < cavaPrev[b] && Config.noiseReduction > 0.1 {
@@ -363,9 +383,13 @@ final class SpectrumAnalyzer {
             out = cavaMem[b] * alpha + out
             cavaMem[b] = out
 
-            // clamp 1.0 + overshoot 检测（cava 仅在 autosens 模式 clamp）
+            // clamp 1.0 + overshoot 检测（cava autosens 反馈）；顶满时给记忆泄压防粘顶
             if useAGC {
-                if out > 1.0 { out = 1.0; overshoot = true }
+                if out > 1.0 {
+                    out = 1.0
+                    cavaMem[b] *= Config.memRelief
+                    overshoot = true
+                }
                 if out < 0 { out = 0 }
             } else {
                 out = max(0, min(1, out))
@@ -379,7 +403,7 @@ final class SpectrumAnalyzer {
                 sens *= (1.0 - Config.sensDown * fm)
                 sensInit = false
             } else if !silence {
-                sens *= (1.0 + Config.sensUp * fm * 1.0)
+                sens *= (1.0 + Config.sensUp * fm)
                 if sensInit { sens *= (1.0 + Config.sensInitBoost * fm) }
             }
             sens = min(max(sens, 0.01), 100.0)
